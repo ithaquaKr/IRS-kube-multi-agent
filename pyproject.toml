@@ -7,7 +7,12 @@ requires-python = ">=3.13"
 license = "MIT"
 authors = [{ name = "ithaquakr", email = "ithadev.nguyen@gmail.com" }]
 keywords = ["kubernetes", "agent"]
-dependencies = []
+dependencies = [
+    "langchain>=0.3.26",
+    "langchain-community>=0.3.26",
+    "langgraph>=0.4.8",
+    "pydantic>=2.11.7",
+]
 
 [dependency-groups]
 dev = [
