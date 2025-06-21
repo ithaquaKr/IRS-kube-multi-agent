@@ -8,6 +8,7 @@ license = "MIT"
 authors = [{ name = "ithaquakr", email = "ithadev.nguyen@gmail.com" }]
 keywords = ["kubernetes", "agent"]
 dependencies = [
+    "google-genai>=1.21.1",
     "langchain>=0.3.26",
     "langchain-community>=0.3.26",
     "langgraph>=0.4.8",
