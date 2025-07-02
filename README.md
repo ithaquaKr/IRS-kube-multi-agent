@@ -1,2 +1,1 @@
-# IRS-kube-multi-agent
-Kubernetes Multi-Agent Incident Response System
+# Kubernetes Multi-Agent Incident Response System
