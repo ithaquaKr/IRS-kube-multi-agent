@@ -12,9 +12,9 @@ from datetime import datetime
 from typing import Any, Dict
 
 from langchain_core.language_models import BaseLLM
-from langchain_core.runnables import Runnable, RunnableLambda
 
 from models import AlertGroup, Incident, IncidentState
+from .base_agent import BaseAgent
 
 
 def _create_incident(alert_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -55,6 +55,7 @@ def _generate_approval_request(llm: BaseLLM, incident: Incident) -> Dict[str, An
         return {
             "incident": incident,
             "error": "No remediation plans available for approval",
+            "next_step": None,
         }
 
     alert = incident.alert.alerts[0]
@@ -97,25 +98,18 @@ def _generate_approval_request(llm: BaseLLM, incident: Incident) -> Dict[str, An
         "incident": incident,
         "approval_request": approval_message,
         "plans": incident.remediation_plans,
+        "next_step": "human_approval",
     }
 
 
-def get_orchestrator_agent(llm: BaseLLM) -> Runnable:
-    """
-    Builds and returns the Orchestrator Agent as a runnable chain.
-    """
-
-    def orchestrate_logic(inputs: Dict[str, Any]) -> Dict[str, Any]:
+class OrchestratorAgent(BaseAgent):
+    def run(self, inputs: dict) -> dict:
         incident = inputs.get("incident")
         action = inputs.get("action", "process")
-
         if action == "create_incident" and not incident:
             return _create_incident(inputs["alert_data"])
-
         if not incident:
             return {"error": "No incident provided for processing"}
-
-        # Handle different incident states
         if incident.state == IncidentState.RECEIVED:
             incident.update_state(IncidentState.INVESTIGATING)
             return {
@@ -123,16 +117,12 @@ def get_orchestrator_agent(llm: BaseLLM) -> Runnable:
                 "agent": "analyst",
                 "incident": incident,
             }
-
         elif incident.state == IncidentState.ANALYZED:
             incident.update_state(IncidentState.PLANNING)
             return {"next_step": "plan", "agent": "planner", "incident": incident}
-
         elif incident.state == IncidentState.PLANNING:
-            # Need human approval for the plan
             incident.update_state(IncidentState.APPROVAL_PENDING)
-            return _generate_approval_request(llm, incident)
-
+            return _generate_approval_request(self.llm, incident)
         elif incident.state == IncidentState.APPROVAL_PENDING:
             if inputs.get("approved"):
                 incident.approved_plan_index = inputs.get("plan_index", 0)
@@ -143,7 +133,6 @@ def get_orchestrator_agent(llm: BaseLLM) -> Runnable:
                     "incident": incident,
                 }
             else:
-                # Plan rejected, go back to planning with feedback
                 incident.update_state(IncidentState.PLANNING)
                 return {
                     "next_step": "plan",
@@ -151,9 +140,7 @@ def get_orchestrator_agent(llm: BaseLLM) -> Runnable:
                     "incident": incident,
                     "feedback": inputs.get("feedback", ""),
                 }
-
         elif incident.state == IncidentState.EXECUTING:
-            # If execution is complete, update the incident state
             if inputs.get("execution_complete"):
                 if inputs.get("success"):
                     incident.update_state(IncidentState.RESOLVED)
@@ -165,10 +152,5 @@ def get_orchestrator_agent(llm: BaseLLM) -> Runnable:
                     incident.resolution_summary = inputs.get(
                         "summary", "Incident resolution failed."
                     )
-
-            return {"incident": incident}
-
-        # Default response for other states
-        return {"incident": incident}
-
-    return RunnableLambda(orchestrate_logic)
+            return {"incident": incident, "next_step": None}
+        return {"incident": incident, "next_step": None}

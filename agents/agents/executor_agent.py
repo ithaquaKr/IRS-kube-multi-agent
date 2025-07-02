@@ -12,9 +12,9 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from langchain_core.language_models import BaseLLM
-from langchain_core.runnables import Runnable, RunnablePassthrough
 
 from models import ExecutionResult, Incident
+from agents.base_agent import BaseAgent
 
 # Flag to control whether commands are actually executed
 # In production, this would be True
@@ -172,39 +172,32 @@ def _create_execution_summary(
     return llm.invoke(prompt).content
 
 
-def get_executor_agent(llm: BaseLLM) -> Runnable:
-    """
-    Builds and returns the Executor Agent as a runnable chain.
-    """
-
-    def execute_plan(inputs: Dict[str, Any]) -> Dict[str, Any]:
+class ExecutorAgent(BaseAgent):
+    def run(self, inputs: dict) -> dict:
         incident = inputs["incident"]
         plan_index = incident.approved_plan_index
         plan = incident.remediation_plans[plan_index]
-
         execution_results = []
         overall_success = True
-
         for i, step in enumerate(plan.steps):
             result = _execute_step(step.model_dump(), i)
             execution_results.append(result)
             incident.execution_results.append(result)
-
             if not result.success:
                 overall_success = False
                 break
-
         resolution_verified = False
         verification_output = ""
-
         if overall_success:
             resolution_verified, verification_output = _verify_resolution(incident)
             overall_success = resolution_verified
-
         summary = _create_execution_summary(
-            llm, incident, execution_results, resolution_verified, verification_output
+            self.llm,
+            incident,
+            execution_results,
+            resolution_verified,
+            verification_output,
         )
-
         return {
             "incident": incident,
             "execution_results": execution_results,
@@ -212,5 +205,3 @@ def get_executor_agent(llm: BaseLLM) -> Runnable:
             "summary": summary,
             "execution_complete": True,
         }
-
-    return RunnablePassthrough.assign(output=execute_plan) | (lambda x: x["output"])

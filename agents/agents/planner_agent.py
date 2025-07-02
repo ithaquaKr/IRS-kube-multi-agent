@@ -10,10 +10,9 @@ and returns a list of proposed remediation plans.
 import json
 from typing import Any, Dict, List
 
-from langchain_core.language_models import BaseLLM
-from langchain_core.runnables import Runnable, RunnablePassthrough
 
 from models import Incident, RemediationPlan, RemediationStep
+from .base_agent import BaseAgent
 
 
 def _generate_remediation_plans_prompt(incident: Incident, feedback: str = "") -> str:
@@ -96,17 +95,11 @@ def _parse_remediation_plans(plans_data: List[Dict[str, Any]]) -> List[Remediati
     return plans
 
 
-def get_planner_agent(llm: BaseLLM) -> Runnable:
-    """
-    Builds and returns the Planner Agent as a runnable chain.
-    """
-
-    def generate_plans_logic(inputs: Dict[str, Any]) -> Dict[str, Any]:
+class PlannerAgent(BaseAgent):
+    def run(self, inputs: dict) -> dict:
         incident = inputs["incident"]
         feedback = inputs.get("feedback", "")
-
         if not incident.root_cause_analysis:
-            # Fallback if no root cause analysis is available
             step = RemediationStep(
                 description="Contact Kubernetes administrator for manual intervention",
                 command=None,
@@ -122,15 +115,12 @@ def get_planner_agent(llm: BaseLLM) -> Runnable:
                 rollback_plan=None,
             )
             return {"incident": incident, "remediation_plans": [fallback_plan]}
-
         prompt = _generate_remediation_plans_prompt(incident, feedback)
-        response = llm.invoke(prompt).content
-
+        response = self.llm.invoke(prompt).content
         try:
             plans_data = json.loads(response)
             plans = _parse_remediation_plans(plans_data)
         except (json.JSONDecodeError, KeyError):
-            # Fallback if parsing fails
             step = RemediationStep(
                 description="Contact Kubernetes administrator for manual intervention",
                 command=None,
@@ -146,10 +136,5 @@ def get_planner_agent(llm: BaseLLM) -> Runnable:
                 rollback_plan=None,
             )
             plans = [fallback_plan]
-
         incident.remediation_plans = plans
         return {"incident": incident, "remediation_plans": plans}
-
-    return RunnablePassthrough.assign(output=generate_plans_logic) | (
-        lambda x: x["output"]
-    )

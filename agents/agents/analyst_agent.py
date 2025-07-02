@@ -9,11 +9,11 @@ chain that takes an incident as input and returns a root cause analysis.
 import json
 from typing import Any, Dict
 
-from langchain_core.language_models import BaseLLM
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import Runnable, RunnablePassthrough
 from models import RootCauseAnalysis
+from agents.base_agent import BaseAgent
+from mcps.abstract_mcp import AbstractMCPClient
 
 # Mock data for simulating access to a Kubernetes environment.
 # In a real-world scenario, this would be replaced with actual API calls
@@ -77,58 +77,63 @@ def _collect_evidence(incident: Dict[str, Any]) -> Dict[str, Any]:
     return evidence
 
 
-def get_analyst_agent(llm: BaseLLM) -> Runnable:
-    """
-    Builds and returns the Analyst Agent as a runnable chain.
-    """
-    prompt_template = PromptTemplate(
-        template="""
-        You are the Analyst, a detective specialized in Kubernetes incident investigation.
-        Your role is to find the root cause of incidents by analyzing all available evidence.
+class AnalystAgent(BaseAgent):
+    def __init__(self, llm, mcp_client: AbstractMCPClient = None):
+        super().__init__(llm)
+        self.mcp_client = mcp_client
 
-        Based on the following information, determine the most likely root cause.
+    def run(self, inputs: dict) -> dict:
+        incident = inputs["incident"]
+        # Use MCP if available, otherwise fallback to mock data
+        if self.mcp_client:
+            evidence = self.mcp_client.fetch_evidence(incident.id, context_type="all")
+        else:
+            evidence = _collect_evidence(incident)
+        prompt_template = PromptTemplate(
+            template="""
+            You are the Analyst, a detective specialized in Kubernetes incident investigation.
+            Your role is to find the root cause of incidents by analyzing all available evidence.
 
-        ALERT:
-        Name: {alert_name}
-        Description: {alert_description}
-        Severity: {alert_severity}
+            Based on the following information, determine the most likely root cause.
 
-        EVIDENCE:
-        {evidence}
+            ALERT:
+            Name: {alert_name}
+            Description: {alert_description}
+            Severity: {alert_severity}
 
-        Analyze the above information and provide:
-        1. The specific component that is the source of the problem
-        2. A clear description of the root cause
-        3. List the key evidence that supports your conclusion
-        4. A confidence level between 0.0 and 1.0
+            EVIDENCE:
+            {evidence}
 
-        Format your response as a JSON object with the following structure:
-        {{
-            "component": "The specific component that failed",
-            "description": "A technical description of the root cause",
-            "evidence": ["Key evidence point 1", "Key evidence point 2"],
-            "confidence": 0.X
-        }}
-        """,
-        input_variables=[
-            "alert_name",
-            "alert_description",
-            "alert_severity",
-            "evidence",
-        ],
-    )
+            Analyze the above information and provide:
+            1. The specific component that is the source of the problem
+            2. A clear description of the root cause
+            3. List the key evidence that supports your conclusion
+            4. A confidence level between 0.0 and 1.0
 
-    return (
-        RunnablePassthrough.assign(evidence=_collect_evidence)
-        | RunnablePassthrough.assign(
-            alert_name=lambda x: x["incident"].alert.alerts[0].labels.alertname,
-            alert_description=lambda x: x["incident"]
-            .alert.alerts[0]
-            .annotations.description,
-            alert_severity=lambda x: x["incident"].alert.alerts[0].labels.severity,
-            evidence=lambda x: json.dumps(x["evidence"], indent=2),
+            Format your response as a JSON object with the following structure:
+            {{
+                "component": "The specific component that failed",
+                "description": "A technical description of the root cause",
+                "evidence": ["Key evidence point 1", "Key evidence point 2"],
+                "confidence": 0.X
+            }}
+            """,
+            input_variables=[
+                "alert_name",
+                "alert_description",
+                "alert_severity",
+                "evidence",
+            ],
         )
-        | prompt_template
-        | llm
-        | JsonOutputParser(pydantic_object=RootCauseAnalysis)
-    )
+        prompt_inputs = {
+            "alert_name": incident.alert.alerts[0].labels.alertname,
+            "alert_description": incident.alert.alerts[0].annotations.description,
+            "alert_severity": incident.alert.alerts[0].labels.severity,
+            "evidence": json.dumps(evidence, indent=2),
+        }
+        prompt = prompt_template.format(**prompt_inputs)
+        llm_response = self.llm.invoke(prompt)
+        parsed = JsonOutputParser(pydantic_object=RootCauseAnalysis).invoke(
+            llm_response
+        )
+        return {"incident": incident, "root_cause_analysis": parsed}
