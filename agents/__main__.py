@@ -1,23 +1,23 @@
-from typing import Dict, Any, TypedDict
 import json
+import uvicorn
+from fastapi import FastAPI
+from typing import Any, Dict, TypedDict
 
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from config import config
-from models import Incident
-from agents.orchestrator_agent import OrchestratorAgent
-from agents.analyst_agent import AnalystAgent
-from agents.planner_agent import PlannerAgent
-from agents.executor_agent import ExecutorAgent
+from agents.analyst_agent import get_analyst_agent
+from agents.executor_agent import get_executor_agent
+from agents.orchestrator_agent import get_orchestrator_agent
+from agents.planner_agent import get_planner_agent
+from llms.gemini import create_gemini_client
+from models import Alert, Incident
 
 
-class IncidentState(TypedDict):
+class IncidentStateGraph(TypedDict):
     """State for the incident workflow graph."""
 
     incident: Incident
     action: str
-    agent: str
     error: str
     approved: bool
     plan_index: int
@@ -25,57 +25,73 @@ class IncidentState(TypedDict):
     execution_complete: bool
     success: bool
     summary: str
+    next_step: str
+    alert_data: Dict[str, Any]
+
+
+app = FastAPI()
+
+
+@app.post("/webhook")
+async def alertmanager_webhook(alert_payload: Alert):
+    """Receives alerts from Alertmanager and triggers incident processing."""
+    print(
+        f"Received Alertmanager webhook: {json.dumps(alert_payload.model_dump(), indent=2)}"
+    )
+
+    try:
+        # Process the incident using the existing logic
+        incident = process_incident(alert_payload.model_dump())
+        return {"status": "success", "incident_id": incident.id}
+    except Exception as e:
+        print(f"Error processing incident: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 
 def create_llm():
     """Create a language model instance."""
-    settings = config.get_llm_settings()
-
-    # Use the Gemini API via the OpenAI client
-    return ChatOpenAI(
-        api_key=settings["api_key"],
-        base_url=settings["base_url"],
-        temperature=settings["temperature"],
-        model="gemini-pro",  # This is ignored but required by the OpenAI client
-    )
+    return create_gemini_client()
 
 
 def create_k8s_incident_graph() -> StateGraph:
     """Create the incident management workflow graph."""
-    # Initialize the LLM and agents
     llm = create_llm()
 
-    orchestrator = OrchestratorAgent(llm)
-    analyst = AnalystAgent(llm)
-    planner = PlannerAgent(llm)
-    executor = ExecutorAgent(llm)
+    # Get the runnable agents
+    orchestrator_agent = get_orchestrator_agent(llm)
+    analyst_agent = get_analyst_agent(llm)
+    planner_agent = get_planner_agent(llm)
+    executor_agent = get_executor_agent(llm)
 
-    # Define the graph
-    workflow = StateGraph(IncidentState)
+    workflow = StateGraph(IncidentStateGraph)
 
-    # Add nodes for each agent
-    workflow.add_node(
-        "orchestrator", lambda state: orchestrator_node(orchestrator, state)
-    )
-    workflow.add_node("analyst", lambda state: analyst_node(analyst, state))
-    workflow.add_node("planner", lambda state: planner_node(planner, state))
+    # Add nodes for each agent, directly using the runnable
+    workflow.add_node("orchestrator", orchestrator_agent)
+    workflow.add_node("analyst", analyst_agent)
+    workflow.add_node("planner", planner_agent)
     workflow.add_node("human_approval", human_approval_node)
-    workflow.add_node("executor", lambda state: executor_node(executor, state))
+    workflow.add_node("executor", executor_agent)
 
-    # Define the edges
-    workflow.add_edge("orchestrator", "analyst", should_investigate)
-    workflow.add_edge("analyst", "orchestrator", lambda _: True)
-    workflow.add_edge("orchestrator", "planner", should_plan)
-    workflow.add_edge("planner", "orchestrator", lambda _: True)
-    workflow.add_edge("orchestrator", "human_approval", should_approve)
-    workflow.add_edge("human_approval", "orchestrator", lambda _: True)
-    workflow.add_edge("orchestrator", "executor", should_execute)
-    workflow.add_edge("executor", "orchestrator", lambda _: True)
-
-    # Add conditional end states
+    # Define conditional edges from orchestrator based on 'next_step'
     workflow.add_conditional_edges(
-        "orchestrator", is_incident_resolved, {True: END, False: "orchestrator"}
+        "orchestrator",
+        lambda state: state.get("next_step"),
+        {
+            "investigate": "analyst",
+            "plan": "planner",
+            "human_approval": "human_approval",
+            "execute": "executor",
+            "resolved": END,  # Incident resolved
+            "failed": END,  # Incident failed
+            None: END,  # Default to END if next_step is not set
+        },
     )
+
+    # Define unconditional edges back to orchestrator
+    workflow.add_edge("analyst", "orchestrator")
+    workflow.add_edge("planner", "orchestrator")
+    workflow.add_edge("human_approval", "orchestrator")
+    workflow.add_edge("executor", "orchestrator")
 
     # Set the entry point
     workflow.set_entry_point("orchestrator")
@@ -84,46 +100,7 @@ def create_k8s_incident_graph() -> StateGraph:
 
 
 # Node functions
-
-
-def orchestrator_node(agent: OrchestratorAgent, state: IncidentState) -> IncidentState:
-    """Process the current state using the orchestrator agent."""
-    print(
-        f"[Orchestrator] Processing incident in state: {state.get('incident', {}).get('state', 'UNKNOWN')}"
-    )
-
-    result = agent.run(state)
-
-    return {**state, **result}
-
-
-def analyst_node(agent: AnalystAgent, state: IncidentState) -> IncidentState:
-    """Analyze the incident using the analyst agent."""
-    print(f"[Analyst] Investigating incident: {state['incident'].id}")
-
-    result = agent.run(state)
-
-    return {
-        **state,
-        **result,
-        "agent": "orchestrator",  # Return control to orchestrator
-    }
-
-
-def planner_node(agent: PlannerAgent, state: IncidentState) -> IncidentState:
-    """Create remediation plans using the planner agent."""
-    print(f"[Planner] Creating remediation plan for incident: {state['incident'].id}")
-
-    result = agent.run(state)
-
-    return {
-        **state,
-        **result,
-        "agent": "orchestrator",  # Return control to orchestrator
-    }
-
-
-def human_approval_node(state: IncidentState) -> IncidentState:
+def human_approval_node(state: IncidentStateGraph) -> IncidentStateGraph:
     """Simulate human approval of remediation plans."""
     incident = state["incident"]
     print(f"[Human] Reviewing remediation plans for incident: {incident.id}")
@@ -151,64 +128,15 @@ def human_approval_node(state: IncidentState) -> IncidentState:
     plan_index = 0
     feedback = ""
 
+    next_step = "execute" if approved else "plan"  # Determine next_step
+
     return {
         **state,
-        "agent": "orchestrator",
         "approved": approved,
         "plan_index": plan_index,
         "feedback": feedback,
+        "next_step": next_step,  # Add next_step
     }
-
-
-def executor_node(agent: ExecutorAgent, state: IncidentState) -> IncidentState:
-    """Execute remediation plan using the executor agent."""
-    print(f"[Executor] Executing remediation plan for incident: {state['incident'].id}")
-
-    result = agent.run(state)
-
-    return {
-        **state,
-        **result,
-        "agent": "orchestrator",  # Return control to orchestrator
-    }
-
-
-# Edge condition functions
-
-
-def should_investigate(state: IncidentState) -> bool:
-    """Check if the incident needs investigation."""
-    return state.get("next_step") == "investigate" and state.get("agent") == "analyst"
-
-
-def should_plan(state: IncidentState) -> bool:
-    """Check if remediation planning is needed."""
-    return state.get("next_step") == "plan" and state.get("agent") == "planner"
-
-
-def should_approve(state: IncidentState) -> bool:
-    """Check if human approval is needed."""
-    incident = state.get("incident")
-    return (
-        incident
-        and incident.state == IncidentState.APPROVAL_PENDING
-        and incident.remediation_plans
-        and len(incident.remediation_plans) > 0
-    )
-
-
-def should_execute(state: IncidentState) -> bool:
-    """Check if plan execution is needed."""
-    return state.get("next_step") == "execute" and state.get("agent") == "executor"
-
-
-def is_incident_resolved(state: IncidentState) -> bool:
-    """Check if the incident is resolved or failed."""
-    incident = state.get("incident")
-    if not incident:
-        return False
-
-    return incident.state in [IncidentState.RESOLVED, IncidentState.FAILED]
 
 
 # Utility functions for the main workflow
@@ -222,70 +150,58 @@ def load_alert_from_file(file_path: str) -> Dict[str, Any]:
 
 def process_incident(alert_data: Dict[str, Any]) -> Incident:
     """Process an incident through the entire workflow."""
-    # Initialize the graph
     workflow = create_k8s_incident_graph()
+    app_graph = workflow.compile()
 
-    # Create a compiled graph for execution
-    app = workflow.compile()
-
-    # Initialize the state with the alert
     state = {
         "incident": None,
         "action": "create_incident",
-        "agent": "orchestrator",
         "error": "",
-        "alert_data": alert_data,
         "approved": False,
         "plan_index": 0,
         "feedback": "",
         "execution_complete": False,
         "success": False,
         "summary": "",
+        "next_step": "",
+        "alert_data": alert_data,
     }
 
-    # Execute the workflow
-    for output in app.stream(state):
-        # The workflow streams each state transition
+    for output in app_graph.stream(state):
         current_state = output.values[0]
-
-        # Check for errors
         if current_state.get("error"):
             print(f"Error: {current_state['error']}")
 
-    # Return the final incident
     final_state = output.values[0]
     return final_state.get("incident")
 
 
 def main():
     """Main entry point for the application."""
-    # Check for command line arguments
     import sys
 
-    if len(sys.argv) > 1:
-        # Use provided alert file
-        alert_file = sys.argv[1]
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        print("Starting FastAPI webhook server...")
+        uvicorn.run(app, host="0.0.0.0", port=3000)
     else:
-        # Use default alert file
-        alert_file = "examples/alerts/node-down.json"
+        if len(sys.argv) > 1:
+            alert_file = sys.argv[1]
+        else:
+            alert_file = "examples/alerts/node-down.json"
 
-    print(f"Processing alert from file: {alert_file}")
+        print(f"Processing alert from file: {alert_file}")
 
-    # Load the alert
-    alert_data = load_alert_from_file(alert_file)
+        alert_data = load_alert_from_file(alert_file)
+        incident = process_incident(alert_data)
 
-    # Process the incident
-    incident = process_incident(alert_data)
+        print("\n" + "=" * 80)
+        print(f"Incident {incident.id} - Final State: {incident.state}")
 
-    # Print the final summary
-    print("\n" + "=" * 80)
-    print(f"Incident {incident.id} - Final State: {incident.state}")
+        if incident.resolution_summary:
+            print("\nResolution Summary:")
+            print(incident.resolution_summary)
 
-    if incident.resolution_summary:
-        print("\nResolution Summary:")
-        print(incident.resolution_summary)
-
-    print("=" * 80 + "\n")
+        print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
