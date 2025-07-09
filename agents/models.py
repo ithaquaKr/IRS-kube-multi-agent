@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Literal
+from typing import List, Dict, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -50,61 +50,61 @@ class AlertGroup(BaseModel):
     groupLabels: Dict[str, str] = Field(default_factory=dict)
 
 
-class IncidentState(str, Enum):
-    RECEIVED = "received"
-    INVESTIGATING = "investigating"
-    ANALYZED = "analyzed"
-    PLANNING = "planning"
-    APPROVAL_PENDING = "approval_pending"
-    EXECUTING = "executing"
-    RESOLVED = "resolved"
-    FAILED = "failed"
-
-
-class RootCauseAnalysis(BaseModel):
-    component: str
-    description: str
-    evidence: List[str]
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class RemediationStep(BaseModel):
-    description: str
-    command: Optional[str] = None
-    expected_outcome: str
-    risk_level: Literal["low", "medium", "high"]
-
-
-class RemediationPlan(BaseModel):
-    title: str
-    description: str
-    impact_assessment: str
-    steps: List[RemediationStep]
-    estimated_time: str
-    rollback_plan: Optional[List[RemediationStep]] = None
-
-
-class ExecutionResult(BaseModel):
-    step_index: int
-    step_description: str
-    command: Optional[str] = None
-    success: bool
-    output: str
-    error: Optional[str] = None
-
-
-class Incident(BaseModel):
-    id: str
-    state: IncidentState
-    alert: AlertGroup
-    creation_time: datetime
-    last_updated: datetime
-    root_cause_analysis: Optional[RootCauseAnalysis] = None
-    remediation_plans: List[RemediationPlan] = Field(default_factory=list)
-    approved_plan_index: Optional[int] = None
-    execution_results: List[ExecutionResult] = Field(default_factory=list)
-    resolution_summary: Optional[str] = None
-
-    def update_state(self, new_state: IncidentState):
-        self.state = new_state
-        self.last_updated = datetime.now()
+# class IncidentState(str, Enum):
+#     RECEIVED = "received"
+#     INVESTIGATING = "investigating"
+#     ANALYZED = "analyzed"
+#     PLANNING = "planning"
+#     APPROVAL_PENDING = "approval_pending"
+#     EXECUTING = "executing"
+#     RESOLVED = "resolved"
+#     FAILED = "failed"
+#
+#
+# class RootCauseAnalysis(BaseModel):
+#     component: str
+#     description: str
+#     evidence: List[str]
+#     confidence: float = Field(ge=0.0, le=1.0)
+#
+#
+# class RemediationStep(BaseModel):
+#     description: str
+#     command: Optional[str] = None
+#     expected_outcome: str
+#     risk_level: Literal["low", "medium", "high"]
+#
+#
+# class RemediationPlan(BaseModel):
+#     title: str
+#     description: str
+#     impact_assessment: str
+#     steps: List[RemediationStep]
+#     estimated_time: str
+#     rollback_plan: Optional[List[RemediationStep]] = None
+#
+#
+# class ExecutionResult(BaseModel):
+#     step_index: int
+#     step_description: str
+#     command: Optional[str] = None
+#     success: bool
+#     output: str
+#     error: Optional[str] = None
+#
+#
+# class Incident(BaseModel):
+#     id: str
+#     state: IncidentState
+#     alert: AlertGroup
+#     creation_time: datetime
+#     last_updated: datetime
+#     root_cause_analysis: Optional[RootCauseAnalysis] = None
+#     remediation_plans: List[RemediationPlan] = Field(default_factory=list)
+#     approved_plan_index: Optional[int] = None
+#     execution_results: List[ExecutionResult] = Field(default_factory=list)
+#     resolution_summary: Optional[str] = None
+#
+#     def update_state(self, new_state: IncidentState):
+#         self.state = new_state
+#         self.last_updated = datetime.now()

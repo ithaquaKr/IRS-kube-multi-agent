@@ -14,7 +14,7 @@ def create_gemini_client():
     settings = config.get_llm_settings()
 
     return ChatGoogleGenerativeAI(
-        model=settings.get("model", "gemini-pro"),
+        model=settings.get("model", "gemini-1.5-flash"),
         temperature=settings.get("temperature", 0.7),
         google_api_key=settings.get("api_key"),
     )

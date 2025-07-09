@@ -6,10 +6,13 @@ environment variables using pydantic-settings for robust and type-safe
 configuration management.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 
 class Config(BaseSettings):
@@ -39,6 +42,28 @@ class Config(BaseSettings):
     temperature: float = 0.1
     require_human_approval: bool = True
 
+    # Slack Configuration
+    SLACK_BOT_TOKEN: Optional[str] = Field(default=None, alias="SLACK_BOT_TOKEN")
+    SLACK_SIGNING_SECRET: Optional[str] = Field(
+        default=None, alias="SLACK_SIGNING_SECRET"
+    )
+    SLACK_APP_TOKEN: Optional[str] = Field(default=None, alias="SLACK_APP_TOKEN")
+    SLACK_CHANNEL_ID: str = Field(
+        default="#incident-response", alias="SLACK_CHANNEL_ID"
+    )
+    SLACK_APPROVAL_TIMEOUT: int = Field(default=300, alias="SLACK_APPROVAL_TIMEOUT")
+
+    # Kubernetes Configuration
+    KUBECONFIG_PATH: Optional[str] = Field(default=None, alias="KUBECONFIG_PATH")
+
+    # LLM Configuration
+    GOOGLE_API_KEY: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+    TAVILY_API_KEY: Optional[str] = Field(default=None, alias="TAVILY_API_KEY")
+
+    # Server Configuration
+    HOST: str = Field(default="0.0.0.0", alias="HOST")
+    PORT: int = Field(default=3000, alias="PORT")
+
     def get_llm_settings(self) -> Dict[str, Any]:
         """Get the settings for LLM initialization."""
         return {
@@ -56,3 +81,24 @@ class Config(BaseSettings):
 
 # Global config instance
 config = Config()
+
+
+# Validation
+def validate_slack_config():
+    """Validate that required Slack configuration is present"""
+    if not config.SLACK_BOT_TOKEN:
+        raise ValueError("SLACK_BOT_TOKEN environment variable is required")
+    if not config.SLACK_SIGNING_SECRET:
+        raise ValueError("SLACK_SIGNING_SECRET environment variable is required")
+    if not config.SLACK_APP_TOKEN:
+        raise ValueError("SLACK_APP_TOKEN environment variable is required")
+    if not config.SLACK_CHANNEL_ID:
+        raise ValueError("SLACK_CHANNEL_ID environment variable is required")
+
+
+def validate_llm_config():
+    """Validate that required LLM configuration is present"""
+    if not config.GOOGLE_API_KEY:
+        raise ValueError("GOOGLE_API_KEY environment variable is required")
+    if not config.TAVILY_API_KEY:
+        raise ValueError("TAVILY_API_KEY environment variable is required")
